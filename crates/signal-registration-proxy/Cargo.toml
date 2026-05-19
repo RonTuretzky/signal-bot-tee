@@ -40,6 +40,8 @@ governor = "0.8"
 # Encryption
 aes-gcm = "0.10"
 rand = "0.8"
+hmac = "0.12"
+base64.workspace = true
 
 # URL encoding
 urlencoding = "2.1"

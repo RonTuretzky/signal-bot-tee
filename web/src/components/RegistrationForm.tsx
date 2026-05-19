@@ -45,6 +45,12 @@ export function RegistrationForm({ onComplete }: { onComplete?: () => void }) {
       setError('Please enter a phone number')
       return
     }
+    // Basic E.164 validation
+    const cleaned = formData.phoneNumber.replace(/[\s\-()]/g, '')
+    if (!cleaned.match(/^\+[1-9]\d{6,14}$/)) {
+      setError('Please enter a valid phone number in international format (e.g., +15551234567)')
+      return
+    }
 
     setLoading(true)
     setError(null)
@@ -187,6 +193,7 @@ export function RegistrationForm({ onComplete }: { onComplete?: () => void }) {
                     onChange={(e) => updateField('phoneNumber', e.target.value)}
                     placeholder="+1 555 123 4567"
                     className="glass-input pl-12"
+                    autoFocus
                   />
                 </div>
                 <p className="text-xs text-[var(--text-muted)] mt-2">
@@ -246,9 +253,26 @@ export function RegistrationForm({ onComplete }: { onComplete?: () => void }) {
             </div>
 
             {error && (
-              <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 text-red-400 text-sm">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                {error}
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 text-red-400 text-sm">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  {error}
+                </div>
+                {error.toLowerCase().includes('captcha') && (
+                  <p className="text-xs text-[var(--text-muted)] px-1">
+                    Captcha tokens expire quickly. Get a fresh one and try again immediately.
+                  </p>
+                )}
+                {error.toLowerCase().includes('rate') && (
+                  <p className="text-xs text-[var(--text-muted)] px-1">
+                    Signal rate-limits registration attempts. Wait 24 hours before trying again.
+                  </p>
+                )}
+                {error.toLowerCase().includes('already registered') && (
+                  <p className="text-xs text-[var(--text-muted)] px-1">
+                    This number has stale data. The system will attempt to clean it up — try again.
+                  </p>
+                )}
               </div>
             )}
 
@@ -298,8 +322,17 @@ export function RegistrationForm({ onComplete }: { onComplete?: () => void }) {
                 placeholder="123456"
                 className="glass-input text-center text-2xl tracking-widest"
                 maxLength={6}
+                autoFocus
               />
             </div>
+
+            <button
+              onClick={handleRegister}
+              disabled={loading}
+              className="text-sm text-[var(--accent-start)] hover:text-[var(--accent-end)] transition-colors disabled:opacity-50"
+            >
+              {loading ? 'Sending...' : "Didn't receive a code? Resend"}
+            </button>
 
             {error && (
               <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 text-red-400 text-sm">

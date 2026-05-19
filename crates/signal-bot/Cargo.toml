@@ -15,6 +15,7 @@ dstack-client = { path = "../dstack-client" }
 signal-client = { path = "../signal-client" }
 tools = { path = "../tools" }
 x402-payments = { path = "../x402-payments" }
+stripe-payments = { path = "../stripe-payments" }
 
 # Workspace dependencies
 tokio.workspace = true
@@ -32,6 +33,8 @@ async-trait.workspace = true
 tokio-stream.workspace = true
 sha2.workspace = true
 hex.workspace = true
+reqwest.workspace = true
+urlencoding = "2.1"
 
 [dev-dependencies]
 tokio-test.workspace = true

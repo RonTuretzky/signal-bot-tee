@@ -8,6 +8,7 @@ pub use handlers::*;
 pub use middleware::{logging_middleware, rate_limit_middleware, RateLimitState};
 pub use types::*;
 
+use crate::auth::TokenManager;
 use crate::registry::{Registry, Store};
 use crate::signal::SignalRegistrationClient;
 use axum::{
@@ -30,6 +31,8 @@ pub struct AppState {
     pub store: Arc<Store>,
     /// Signal CLI client
     pub signal_client: Arc<SignalRegistrationClient>,
+    /// JWT token manager
+    pub token_manager: Arc<TokenManager>,
 }
 
 impl AppState {
@@ -38,11 +41,13 @@ impl AppState {
         registry: Registry,
         store: Store,
         signal_client: SignalRegistrationClient,
+        token_manager: TokenManager,
     ) -> Self {
         Self {
             registry: Arc::new(RwLock::new(registry)),
             store: Arc::new(store),
             signal_client: Arc::new(signal_client),
+            token_manager: Arc::new(token_manager),
         }
     }
 }
@@ -57,6 +62,8 @@ pub fn create_router_with_rate_limit(state: AppState, rate_limit: RateLimitState
     Router::new()
         // Health check (no rate limiting)
         .route("/health", get(handlers::health))
+        // Auth endpoint
+        .route("/v1/auth/login", post(handlers::login))
         // Registration endpoints (with rate limiting)
         .route("/v1/register/:number", post(handlers::register_number))
         .route(
@@ -66,7 +73,7 @@ pub fn create_router_with_rate_limit(state: AppState, rate_limit: RateLimitState
         .route("/v1/status/:number", get(handlers::get_status))
         .route("/v1/accounts", get(handlers::list_accounts))
         .route("/v1/unregister/:number", delete(handlers::unregister))
-        // Profile and username management (requires ownership_secret)
+        // Profile and username management (requires ownership_secret or JWT)
         .route("/v1/profiles/:number", put(handlers::update_profile))
         .route("/v1/accounts/:number/username", post(handlers::set_username))
         .route("/v1/accounts/:number/username", delete(handlers::delete_username))
@@ -76,6 +83,13 @@ pub fn create_router_with_rate_limit(state: AppState, rate_limit: RateLimitState
         .route("/v1/bots", get(handlers::list_bots))
         .route("/v1/bots/:number", get(handlers::get_bot_config))
         .route("/v1/bots/:number", put(handlers::update_bot_config))
+        // Dashboard endpoints (requires JWT)
+        .route("/v1/dashboard/:number", get(handlers::get_dashboard))
+        .route("/v1/dashboard/:number/config", put(handlers::update_bot_config_jwt))
+        // Webhook alert endpoints (requires JWT)
+        .route("/v1/webhooks/:number/alert", post(handlers::webhook_alert))
+        .route("/v1/webhooks/:number/alert/:recipient", post(handlers::webhook_alert_to))
+        .route("/v1/webhooks/:number/grafana", post(handlers::webhook_grafana))
         // Debug endpoints
         .route("/v1/debug/signal-accounts", get(handlers::debug_signal_accounts))
         .route("/v1/debug/force-unregister/:number", post(handlers::debug_force_unregister))

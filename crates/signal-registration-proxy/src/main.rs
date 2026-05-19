@@ -67,8 +67,34 @@ async fn main() {
         }
     };
 
+    // Derive JWT signing key from TEE (or use fallback for local dev)
+    let auth_dstack = DstackClient::new(&config.dstack.socket_path);
+    let signing_key = match auth_dstack
+        .derive_key("signal-registration-proxy/jwt-signing", None)
+        .await
+    {
+        Ok(key_bytes) if key_bytes.len() >= 32 => {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&key_bytes[..32]);
+            info!("Using TEE-derived JWT signing key");
+            key
+        }
+        _ => {
+            // Fallback: derive from a fixed seed (for local dev without TEE)
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(b"signal-registration-proxy/jwt-signing/dev-fallback");
+            let hash = hasher.finalize();
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&hash);
+            info!("Using fallback JWT signing key (no TEE available)");
+            key
+        }
+    };
+    let token_manager = signal_registration_proxy::auth::TokenManager::new(signing_key);
+
     // Create application state
-    let state = AppState::new(registry, store, signal_client);
+    let state = AppState::new(registry, store, signal_client, token_manager);
 
     // Create rate limiter from config
     let rate_limit = RateLimitState::new(config.rate_limit.global_per_minute);

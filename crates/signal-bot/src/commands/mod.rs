@@ -5,7 +5,9 @@ mod chat;
 mod clear;
 mod deposit;
 mod help;
+mod mode;
 mod models;
+mod subscribe;
 mod verify;
 
 pub use balance::BalanceHandler;
@@ -13,7 +15,9 @@ pub use chat::ChatHandler;
 pub use clear::ClearHandler;
 pub use deposit::DepositHandler;
 pub use help::HelpHandler;
+pub use mode::ModeHandler;
 pub use models::ModelsHandler;
+pub use subscribe::{ManageHandler, SubscribeHandler, SubscriptionHandler};
 pub use verify::VerifyHandler;
 
 use crate::error::AppResult;

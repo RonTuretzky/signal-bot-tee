@@ -6061,10 +6061,12 @@ dependencies = [
  "humantime-serde",
  "mockall",
  "near-ai-client",
+ "reqwest 0.11.27",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "signal-client",
+ "stripe-payments",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
@@ -6072,6 +6074,7 @@ dependencies = [
  "tools",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "wiremock",
  "x402-payments",
 ]
@@ -6120,12 +6123,14 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "axum",
+ "base64 0.21.7",
  "chrono",
  "config",
  "dotenvy",
  "dstack-client",
  "governor 0.8.1",
  "hex",
+ "hmac 0.12.1",
  "rand 0.8.5",
  "reqwest 0.11.27",
  "serde",
@@ -8587,6 +8592,32 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "stripe-payments"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "dstack-client",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.8.5",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tower 0.4.13",
+ "tower-http 0.5.2",
+ "tracing",
+]
 
 [[package]]
 name = "strsim"

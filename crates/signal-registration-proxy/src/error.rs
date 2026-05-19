@@ -36,6 +36,9 @@ pub enum ProxyError {
     #[error("TEE not available: {0}")]
     TeeNotAvailable(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Rate limit exceeded")]
     RateLimitExceeded,
 
@@ -64,6 +67,7 @@ impl IntoResponse for ProxyError {
             ProxyError::TeeNotAvailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "TEE_NOT_AVAILABLE")
             }
+            ProxyError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED"),
             ProxyError::RateLimitExceeded => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED"),
             ProxyError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };

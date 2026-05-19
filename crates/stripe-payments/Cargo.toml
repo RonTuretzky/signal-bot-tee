@@ -1,0 +1,49 @@
+[package]
+name = "stripe-payments"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Stripe subscription billing for signal-bot-tee"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# HTTP server
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# HTTP client (for Stripe API)
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Crypto/Security
+sha2 = { workspace = true }
+hex = { workspace = true }
+aes-gcm = "0.10"
+rand = "0.8"
+hmac = "0.12"
+
+# TEE integration
+dstack-client = { path = "../dstack-client" }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = "3.10"

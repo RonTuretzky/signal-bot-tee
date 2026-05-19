@@ -6,6 +6,7 @@ use axum::{
 };
 use signal_registration_proxy::{
     api::{create_router_with_rate_limit, AppState, RateLimitState},
+    auth::TokenManager,
     registry::{Registry, Store},
     SignalRegistrationClient,
 };
@@ -17,7 +18,8 @@ fn create_test_state() -> AppState {
     let store = Store::memory();
     // Use a non-existent URL since we won't actually call Signal in tests
     let signal_client = SignalRegistrationClient::new("http://localhost:9999").unwrap();
-    AppState::new(registry, store, signal_client)
+    let token_manager = TokenManager::new([0x42u8; 32]);
+    AppState::new(registry, store, signal_client, token_manager)
 }
 
 #[tokio::test]

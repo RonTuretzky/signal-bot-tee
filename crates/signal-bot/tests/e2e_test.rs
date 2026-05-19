@@ -11,6 +11,7 @@ use tools::ToolRegistry;
 use wiremock::matchers::{method, path, body_json, body_string_contains};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use signal_bot::commands::{ChatHandler, CommandHandler};
+use signal_bot::group::GroupConfigStore;
 
 #[tokio::test]
 async fn test_bot_chat_e2e() {
@@ -31,6 +32,9 @@ async fn test_bot_chat_e2e() {
         tool_registry.clone(),
         "You are a helpful assistant.".to_string(),
         5,
+        None,
+        None,
+        GroupConfigStore::new(),
     );
 
     // 3. Mock NEAR AI Response
@@ -113,6 +117,9 @@ async fn test_bot_tool_use_e2e() {
         tool_registry.clone(),
         "You are a helpful assistant.".to_string(),
         5,
+        None,
+        None,
+        GroupConfigStore::new(),
     );
 
     // 3. Mock NEAR AI Response 1: Tool Call

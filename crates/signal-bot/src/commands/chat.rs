@@ -1,7 +1,10 @@
 //! Chat command - proxies messages to NEAR AI.
 
+use crate::bot_config::BotConfigProvider;
 use crate::commands::CommandHandler;
 use crate::error::AppResult;
+use crate::group::GroupConfigStore;
+use crate::payments::PaymentGate;
 use async_trait::async_trait;
 use conversation_store::{ConversationStore, StoredToolCall};
 use near_ai_client::{
@@ -12,9 +15,6 @@ use signal_client::{BotMessage, SignalClient};
 use std::sync::Arc;
 use tools::{FunctionCall as ToolsFunctionCall, ToolCall as ToolsToolCall, ToolExecutor, ToolRegistry};
 use tracing::{debug, error, info, instrument, warn};
-use x402_payments::{
-    calculate_credits, estimate_credits, CreditStore, PricingConfig, TokenUsage, UsageRecord,
-};
 
 pub struct ChatHandler {
     near_ai: Arc<NearAiClient>,
@@ -28,10 +28,12 @@ pub struct ChatHandler {
     signal_username: Option<String>,
     /// GitHub repo URL for identity in system prompt.
     github_repo: Option<String>,
-    /// Optional credit store for payment integration.
-    credit_store: Option<Arc<CreditStore>>,
-    /// Pricing configuration.
-    pricing_config: PricingConfig,
+    /// Optional payment gate for access control and usage tracking.
+    payment_gate: Option<Arc<dyn PaymentGate>>,
+    /// Optional per-bot config provider for multi-tenant deployments.
+    bot_config_provider: Option<Arc<BotConfigProvider>>,
+    /// Per-group config store (mode, etc.).
+    group_config: GroupConfigStore,
 }
 
 impl ChatHandler {
@@ -44,6 +46,7 @@ impl ChatHandler {
         max_tool_iterations: usize,
         signal_username: Option<String>,
         github_repo: Option<String>,
+        group_config: GroupConfigStore,
     ) -> Self {
         Self {
             near_ai,
@@ -55,13 +58,14 @@ impl ChatHandler {
             max_tool_iterations,
             signal_username,
             github_repo,
-            credit_store: None,
-            pricing_config: PricingConfig::default(),
+            payment_gate: None,
+            bot_config_provider: None,
+            group_config,
         }
     }
 
-    /// Create a new ChatHandler with payment integration.
-    pub fn with_payments(
+    /// Create a new ChatHandler with a payment gate.
+    pub fn with_payment_gate(
         near_ai: Arc<NearAiClient>,
         conversations: Arc<ConversationStore>,
         signal_client: Arc<SignalClient>,
@@ -70,8 +74,8 @@ impl ChatHandler {
         max_tool_iterations: usize,
         signal_username: Option<String>,
         github_repo: Option<String>,
-        credit_store: Arc<CreditStore>,
-        pricing_config: PricingConfig,
+        payment_gate: Arc<dyn PaymentGate>,
+        group_config: GroupConfigStore,
     ) -> Self {
         Self {
             near_ai,
@@ -83,33 +87,80 @@ impl ChatHandler {
             max_tool_iterations,
             signal_username,
             github_repo,
-            credit_store: Some(credit_store),
-            pricing_config,
+            payment_gate: Some(payment_gate),
+            bot_config_provider: None,
+            group_config,
         }
     }
 
-    /// Format credits as USDC for display.
-    fn format_credits(credits: u64) -> String {
-        let usdc = credits as f64 / 1_000_000.0;
-        if usdc < 0.01 {
-            format!("${:.4}", usdc)
-        } else {
-            format!("${:.2}", usdc)
-        }
+    /// Attach a per-bot config provider for multi-tenant deployments.
+    pub fn with_bot_config(mut self, provider: Arc<BotConfigProvider>) -> Self {
+        self.bot_config_provider = Some(provider);
+        self
     }
 
     /// Build system prompt with identity information and current timestamp.
-    fn build_system_prompt(&self) -> String {
+    fn build_system_prompt(&self, base_prompt: Option<&str>) -> String {
+        let prompt = base_prompt.unwrap_or(&self.system_prompt);
         crate::config::build_system_prompt_with_identity(
-            &self.system_prompt,
+            prompt,
             self.signal_username.as_deref(),
             self.github_repo.as_deref(),
         )
     }
 
+    /// Get the system prompt and model for a specific account, using per-bot config if available.
+    async fn get_bot_config_for(&self, receiving_account: &str) -> (String, Option<String>) {
+        if let Some(ref provider) = self.bot_config_provider {
+            let config = provider.get_config(receiving_account).await;
+            let prompt = if let Some(ref p) = config.system_prompt {
+                self.build_system_prompt(Some(p))
+            } else {
+                self.build_system_prompt(None)
+            };
+            return (prompt, config.model);
+        }
+        (self.build_system_prompt(None), None)
+    }
+
+    /// Check if the bot is mentioned in a group message.
+    fn is_bot_mentioned(&self, text: &str) -> bool {
+        let lower = text.to_lowercase();
+        // Check for @username mention
+        if let Some(ref username) = self.signal_username {
+            let at_mention = format!("@{}", username.to_lowercase());
+            if lower.contains(&at_mention) {
+                return true;
+            }
+            // Also check just the username part before the dot (e.g., "nearai" from "nearai.54")
+            if let Some(base) = username.split('.').next() {
+                let at_base = format!("@{}", base.to_lowercase());
+                if lower.contains(&at_base) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Strip the bot's @mention from the message text.
+    fn strip_mention(&self, text: &str) -> String {
+        let mut result = text.to_string();
+        if let Some(ref username) = self.signal_username {
+            // Remove @username.XX and @username variants (case-insensitive)
+            let at_full = format!("@{}", username);
+            result = result.replace(&at_full, "").replace(&at_full.to_lowercase(), "");
+            if let Some(base) = username.split('.').next() {
+                let at_base = format!("@{}", base);
+                result = result.replace(&at_base, "").replace(&at_base.to_lowercase(), "");
+            }
+        }
+        result.trim().to_string()
+    }
+
     /// Build messages for NEAR AI request from conversation store.
-    async fn build_messages(&self, conversation_id: &str) -> AppResult<Vec<Message>> {
-        let system_prompt = self.build_system_prompt();
+    async fn build_messages(&self, conversation_id: &str, system_prompt: &str) -> AppResult<Vec<Message>> {
+        let system_prompt = system_prompt.to_string();
         let stored_messages = self
             .conversations
             .to_openai_messages(conversation_id, Some(&system_prompt))
@@ -180,37 +231,83 @@ impl CommandHandler for ChatHandler {
         // For credits, use the sender's phone number (not group ID)
         let user_id = &message.source;
 
+        // For groups: determine the message text to use (stripped of @mention)
+        let user_text = if message.is_group {
+            self.strip_mention(&message.text)
+        } else {
+            message.text.clone()
+        };
+
         if message.is_group {
             info!(
                 "Group chat from {} in {}: {}...",
                 &message.source[..message.source.len().min(8)],
                 &conversation_id[..conversation_id.len().min(12)],
-                &message.text[..message.text.len().min(50)]
+                &user_text[..user_text.len().min(50)]
             );
         } else {
             info!(
                 "Chat from {}: {}...",
                 &conversation_id[..conversation_id.len().min(8)],
-                &message.text[..message.text.len().min(50)]
+                &user_text[..user_text.len().min(50)]
             );
         }
 
-        // Pre-flight credit check (if payments enabled)
-        if let Some(ref credit_store) = self.credit_store {
-            let estimated_credits = estimate_credits(message.text.len(), &self.pricing_config);
-            if !credit_store.has_credits(user_id, estimated_credits).await {
-                let balance = credit_store.get_balance(user_id).await;
-                return Ok(format!(
-                    "Insufficient credits. You have {} remaining.\n\n\
-                     Use `!deposit` to add USDC and get more credits.",
-                    Self::format_credits(balance.credits_remaining)
-                ));
+        // Group @mention filter: only respond if mentioned or in responds-to-all mode
+        if message.is_group {
+            let mode = self.group_config.get_mode(conversation_id).await;
+            if !mode.responds_to_all() && !self.is_bot_mentioned(&message.text) {
+                debug!("Ignoring group message — bot not mentioned (mode: {})", mode.display_name());
+                return Ok(String::new()); // Empty = no reply
             }
         }
 
-        // Add user message to history
+        // Check if this is a brand new conversation (first message)
+        let is_new_user = self
+            .conversations
+            .get(conversation_id)
+            .await
+            .ok()
+            .flatten()
+            .is_none();
+
+        // Pre-flight payment check
+        if let Some(ref gate) = self.payment_gate {
+            if message.is_group {
+                // Groups: rate-limit by group_id
+                if let Err(msg) = gate.check_group_access(conversation_id).await {
+                    return Ok(msg);
+                }
+            } else {
+                // DMs: rate-limit by sender
+                if let Err(msg) = gate.check_access(user_id, user_text.len()).await {
+                    return Ok(msg);
+                }
+            }
+        }
+
+        // Resolve per-bot system prompt and model (or use global defaults)
+        let (mut system_prompt, model_override) = self.get_bot_config_for(&message.receiving_account).await;
+
+        // For groups: append group mode suffix to system prompt
+        if message.is_group {
+            let mode = self.group_config.get_mode(conversation_id).await;
+            let suffix = mode.system_prompt_suffix();
+            if !suffix.is_empty() {
+                system_prompt.push_str(suffix);
+            }
+        }
+
+        // Send welcome message for first-time users (DMs only)
+        if is_new_user && !message.is_group {
+            let welcome = "Welcome! I'm an AI assistant running securely in a TEE. \
+                           Send `!help` for commands or just start chatting.";
+            let _ = self.signal_client.reply(message, welcome).await;
+        }
+
+        // Add user message to history (use cleaned text, not raw with @mention)
         self.conversations
-            .add_message(conversation_id, "user", &message.text, Some(&self.system_prompt))
+            .add_message(conversation_id, "user", &user_text, Some(&system_prompt))
             .await?;
 
         // Get tool definitions and convert to NEAR AI format
@@ -229,7 +326,7 @@ impl CommandHandler for ChatHandler {
 
         // Tool execution loop - only offer tools on first iteration
         let mut tools_executed = false;
-        // Track total token usage across all iterations (for credit deduction)
+        // Track total token usage across all iterations
         let mut total_prompt_tokens: u32 = 0;
         let mut total_completion_tokens: u32 = 0;
 
@@ -237,10 +334,9 @@ impl CommandHandler for ChatHandler {
             debug!("Tool execution loop iteration {}, tools_executed={}", iteration, tools_executed);
 
             // Build messages from conversation store
-            let messages = self.build_messages(conversation_id).await?;
+            let messages = self.build_messages(conversation_id, &system_prompt).await?;
 
             // Only offer tools if we haven't executed any yet
-            // After tools execute once, force the model to give a text response
             let tools_to_offer = if !tools_executed && !near_tools.is_empty() {
                 Some(&near_tools[..])
             } else {
@@ -250,11 +346,12 @@ impl CommandHandler for ChatHandler {
             // Call NEAR AI with tools (or without if already executed)
             let response = match self
                 .near_ai
-                .chat_with_tools(
+                .chat_with_tools_and_model(
                     messages,
                     Some(0.7),
                     None,
                     tools_to_offer,
+                    model_override.as_deref(),
                 )
                 .await
             {
@@ -361,43 +458,13 @@ impl CommandHandler for ChatHandler {
             // No tool calls (or empty array) - this is the final response
             let mut final_response = self.finalize_response(conversation_id, response.content).await?;
 
-            // Deduct credits if payments enabled
-            if let Some(ref credit_store) = self.credit_store {
-                let token_usage = TokenUsage::new(total_prompt_tokens, total_completion_tokens);
-                let credits_used = calculate_credits(&token_usage, &self.pricing_config);
-
-                // Create usage record
-                let usage_record = UsageRecord::new(
-                    user_id.to_string(),
-                    conversation_id.to_string(),
-                    total_prompt_tokens,
-                    total_completion_tokens,
-                    credits_used,
-                );
-
-                // Deduct credits (if this fails, still return response - better UX)
-                match credit_store.deduct_credits(user_id, credits_used, usage_record).await {
-                    Ok(new_balance) => {
-                        // Append cost info to response
-                        let cost_info = format!(
-                            "\n\n_Cost: {} ({} tokens) | Balance: {}_",
-                            Self::format_credits(credits_used),
-                            total_prompt_tokens + total_completion_tokens,
-                            Self::format_credits(new_balance.credits_remaining)
-                        );
-                        final_response.push_str(&cost_info);
-                        info!(
-                            "Charged {} credits ({} tokens) to {}, remaining: {}",
-                            credits_used,
-                            total_prompt_tokens + total_completion_tokens,
-                            &user_id[..user_id.len().min(8)],
-                            new_balance.credits_remaining
-                        );
-                    }
-                    Err(e) => {
-                        // Log but don't fail the response
-                        error!("Failed to deduct credits for {}: {}", user_id, e);
-                    }
+            // Record usage via payment gate
+            if let Some(ref gate) = self.payment_gate {
+                if let Some(suffix) = gate
+                    .record_usage(user_id, conversation_id, total_prompt_tokens, total_completion_tokens)
+                    .await
+                {
+                    final_response.push_str(&suffix);
                 }
             }
 

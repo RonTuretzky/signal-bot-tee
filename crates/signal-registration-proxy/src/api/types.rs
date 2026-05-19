@@ -200,3 +200,80 @@ pub struct BotsResponse {
     pub bots: Vec<BotInfo>,
     pub total: usize,
 }
+
+/// Request to update bot config via JWT (no ownership_secret needed).
+#[derive(Debug, Deserialize)]
+pub struct UpdateBotConfigJwtRequest {
+    /// AI model to use for this bot
+    pub model: Option<String>,
+    /// System prompt for the AI assistant
+    pub system_prompt: Option<String>,
+}
+
+/// Webhook alert request — accepts alerts from external monitoring systems.
+#[derive(Debug, Deserialize)]
+pub struct WebhookAlertRequest {
+    /// Alert title/summary.
+    pub title: String,
+    /// Alert body/description (optional).
+    pub body: Option<String>,
+    /// Severity level: "critical", "warning", "info", "ok" (optional, defaults to "info").
+    pub severity: Option<String>,
+    /// Source system (e.g., "Grafana", "Prometheus", "UptimeRobot").
+    pub source: Option<String>,
+    /// URL for more details (optional).
+    pub url: Option<String>,
+}
+
+/// Webhook alert response.
+#[derive(Debug, Serialize)]
+pub struct WebhookAlertResponse {
+    pub status: String,
+    pub message: String,
+}
+
+/// Grafana webhook payload (simplified).
+#[derive(Debug, Deserialize)]
+pub struct GrafanaWebhookPayload {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(rename = "ruleUrl")]
+    #[serde(default)]
+    pub rule_url: Option<String>,
+    #[serde(rename = "ruleName")]
+    #[serde(default)]
+    pub rule_name: Option<String>,
+}
+
+/// Login request.
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+    /// Phone number in E.164 format.
+    pub phone_number: String,
+    /// Ownership secret.
+    pub ownership_secret: String,
+}
+
+/// Login response with JWT.
+#[derive(Debug, Serialize)]
+pub struct LoginResponse {
+    pub token: String,
+    pub phone_number: String,
+    pub expires_at: i64,
+}
+
+/// Dashboard response with combined bot status and usage.
+#[derive(Debug, Serialize)]
+pub struct DashboardResponse {
+    pub phone_number: String,
+    pub status: RegistrationStatus,
+    pub registered_at: String,
+    pub model: Option<String>,
+    pub system_prompt: Option<String>,
+    pub username: Option<String>,
+    pub signal_link: Option<String>,
+}

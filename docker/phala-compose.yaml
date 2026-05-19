@@ -46,13 +46,29 @@ services:
       # Tools configuration
       - TOOLS__ENABLED=${TOOLS_ENABLED:-true}
       - TOOLS__WEB_SEARCH__API_KEY=${TOOLS_WEB_SEARCH_API_KEY}
-      # Payment/credit tracking (set to true to enable)
-      - PAYMENTS__ENABLED=false
+      # Payment configuration
+      - PAYMENTS__PROVIDER=${PAYMENTS_PROVIDER:-none}
+      # Stripe config (required when PAYMENTS_PROVIDER=stripe)
+      - PAYMENTS__STRIPE__ENABLED=${STRIPE_ENABLED:-false}
+      - PAYMENTS__STRIPE__SECRET_KEY=${STRIPE_SECRET_KEY}
+      - PAYMENTS__STRIPE__WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - PAYMENTS__STRIPE__PREMIUM_PRICE_ID=${STRIPE_PREMIUM_PRICE_ID}
+      - PAYMENTS__STRIPE__PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID}
+      - PAYMENTS__STRIPE__FREE_DAILY_MESSAGES=${STRIPE_FREE_DAILY_MESSAGES:-15}
+      - PAYMENTS__STRIPE__FRONTEND_URL=${STRIPE_FRONTEND_URL:-https://signal-tee-web.vercel.app}
+      - PAYMENTS__STRIPE__SERVER_PORT=8082
+      # Registration proxy URL (for per-bot config lookup)
+      - SIGNAL__PROXY_URL=http://signal-registration-proxy:8081
       # Dstack TEE socket - provided by Phala CVM
       - DSTACK__SOCKET_PATH=/var/run/dstack.sock
+    ports:
+      # Expose Stripe webhook server externally (only when payments enabled)
+      - "8082:8082"
     volumes:
       # Dstack socket for TEE attestation (provided by Phala CVM)
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
+      # Encrypted subscription data
+      - stripe-data:/data
     depends_on:
       - signal-api
     restart: unless-stopped
@@ -92,4 +108,6 @@ volumes:
   signal-config-v3:
     driver: local
   registry-data:
+    driver: local
+  stripe-data:
     driver: local

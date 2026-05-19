@@ -295,6 +295,41 @@ impl SignalRegistrationClient {
         Ok(())
     }
 
+    /// Send a message from a registered account to a recipient (phone number or group ID).
+    #[instrument(skip(self, message))]
+    pub async fn send_message(
+        &self,
+        from_number: &str,
+        recipient: &str,
+        message: &str,
+    ) -> Result<(), ProxyError> {
+        let body = SendMessageBody {
+            message: message.to_string(),
+            number: Some(from_number.to_string()),
+            recipients: Some(vec![recipient.to_string()]),
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/v2/send", self.base_url))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let resp_body = response.text().await.unwrap_or_default();
+            warn!(status = %status, body = %resp_body, "Signal send failed");
+            return Err(ProxyError::SignalApi(format!(
+                "Send message failed: {} - {}",
+                status, resp_body
+            )));
+        }
+
+        debug!(from = %from_number, to = %recipient, "Message sent successfully");
+        Ok(())
+    }
+
     /// Get identity/fingerprint information for a phone number.
     /// Returns the safety number that users can compare with their Signal app.
     #[instrument(skip(self))]
@@ -358,6 +393,16 @@ struct ProfileRequestBody {
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     about: Option<String>,
+}
+
+/// Request body for sending a message.
+#[derive(Debug, Clone, Serialize)]
+struct SendMessageBody {
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recipients: Option<Vec<String>>,
 }
 
 /// Request body for username.

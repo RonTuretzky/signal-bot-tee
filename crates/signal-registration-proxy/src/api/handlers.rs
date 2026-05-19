@@ -2,15 +2,19 @@
 
 use super::types::{
     AccountInfo, AccountsResponse, AdoptAccountRequest, BotConfigResponse, BotInfo,
-    DeleteUsernameRequest, HealthResponse, ProfileResponse, RegisterRequest, RegisterResponse,
-    SetUsernameRequest, StatusResponse, UnregisterRequest, UpdateBotConfigRequest,
-    UpdateProfileRequest, UsernameResponse, VerifyRequest, VerifyResponse,
+    DashboardResponse, DeleteUsernameRequest, GrafanaWebhookPayload, HealthResponse,
+    LoginRequest, LoginResponse, ProfileResponse, RegisterRequest, RegisterResponse,
+    SetUsernameRequest, StatusResponse, UnregisterRequest, UpdateBotConfigJwtRequest,
+    UpdateBotConfigRequest, UpdateProfileRequest, UsernameResponse, VerifyRequest,
+    VerifyResponse, WebhookAlertRequest, WebhookAlertResponse,
 };
 use super::AppState;
+use crate::auth;
 use crate::error::ProxyError;
 use crate::registry::{normalize_phone_number, PhoneNumberRecord, RegistrationStatus};
 use axum::{
     extract::{Path, State},
+    http::HeaderMap,
     Json,
 };
 use tracing::{info, warn};
@@ -563,4 +567,317 @@ pub async fn list_bots(State(state): State<AppState>) -> Json<Vec<BotInfo>> {
     }
 
     Json(bots)
+}
+
+/// Login endpoint — authenticate with phone number + ownership secret, get JWT.
+pub async fn login(
+    State(state): State<AppState>,
+    Json(request): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>, ProxyError> {
+    let number = normalize_phone_number(&request.phone_number)
+        .map_err(ProxyError::InvalidPhoneNumber)?;
+
+    info!(phone_number = %number, "Login attempt");
+
+    let (token, expires_at) = auth::authenticate(
+        &number,
+        &request.ownership_secret,
+        &state.registry,
+        &state.token_manager,
+    )
+    .await?;
+
+    info!(phone_number = %number, "Login successful");
+
+    Ok(Json(LoginResponse {
+        token,
+        phone_number: number,
+        expires_at,
+    }))
+}
+
+/// Dashboard endpoint — returns bot status and config (requires JWT).
+pub async fn get_dashboard(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<DashboardResponse>, ProxyError> {
+    let number = normalize_phone_number(&number).map_err(ProxyError::InvalidPhoneNumber)?;
+
+    // Verify JWT
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ProxyError::Unauthorized("Missing Authorization header".to_string()))?;
+
+    let claims = auth::extract_bearer_token(auth_header, &state.token_manager)?;
+
+    // Ensure the token matches the requested number
+    if claims.sub != number {
+        return Err(ProxyError::Unauthorized(
+            "Token does not match requested account".to_string(),
+        ));
+    }
+
+    let registry = state.registry.read().await;
+    let record = registry
+        .get(&number)
+        .ok_or_else(|| ProxyError::NotFound(number.clone()))?;
+
+    let phone_digits = number.chars().filter(|c| c.is_ascii_digit()).collect::<String>();
+    let signal_link = if record.status == RegistrationStatus::Verified {
+        Some(format!("https://signal.me/#p/+{}", phone_digits))
+    } else {
+        None
+    };
+
+    Ok(Json(DashboardResponse {
+        phone_number: number,
+        status: record.status.clone(),
+        registered_at: record.registered_at.to_rfc3339(),
+        model: record.model.clone(),
+        system_prompt: record.system_prompt.clone(),
+        username: record.username.clone(),
+        signal_link,
+    }))
+}
+
+/// Update bot config via JWT auth (from web dashboard).
+pub async fn update_bot_config_jwt(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateBotConfigJwtRequest>,
+) -> Result<Json<BotConfigResponse>, ProxyError> {
+    let number = normalize_phone_number(&number).map_err(ProxyError::InvalidPhoneNumber)?;
+    info!(phone_number = %number, "JWT bot config update request");
+
+    // Verify JWT
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ProxyError::Unauthorized("Missing Authorization header".to_string()))?;
+
+    let claims = auth::extract_bearer_token(auth_header, &state.token_manager)?;
+
+    if claims.sub != number {
+        return Err(ProxyError::Unauthorized(
+            "Token does not match requested account".to_string(),
+        ));
+    }
+
+    // Update config
+    let (model, system_prompt) = {
+        let mut registry = state.registry.write().await;
+        let record = registry
+            .get_mut(&number)
+            .ok_or_else(|| ProxyError::NotFound(number.clone()))?;
+
+        if record.status != RegistrationStatus::Verified {
+            return Err(ProxyError::NotFound(number));
+        }
+
+        record.update_config(request.model.clone(), request.system_prompt.clone());
+        let result = (record.model.clone(), record.system_prompt.clone());
+        state.store.save(&registry).await?;
+        result
+    };
+
+    info!(phone_number = %number, "Bot config updated via JWT");
+
+    Ok(Json(BotConfigResponse {
+        phone_number: number,
+        model,
+        system_prompt,
+        message: "Bot configuration updated successfully.".to_string(),
+    }))
+}
+
+// ── Webhook Alert Endpoints ──────────────────────────────────────────────
+
+/// Generic webhook alert — send a formatted alert to a registered bot number.
+/// Auth: Bearer token (JWT) matching the target number.
+pub async fn webhook_alert(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<WebhookAlertRequest>,
+) -> Result<Json<WebhookAlertResponse>, ProxyError> {
+    let number = normalize_phone_number(&number).map_err(ProxyError::InvalidPhoneNumber)?;
+
+    // Verify JWT
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ProxyError::Unauthorized("Missing Authorization header".to_string()))?;
+
+    let claims = auth::extract_bearer_token(auth_header, &state.token_manager)?;
+    if claims.sub != number {
+        return Err(ProxyError::Unauthorized(
+            "Token does not match target number".to_string(),
+        ));
+    }
+
+    // Verify number is registered
+    {
+        let registry = state.registry.read().await;
+        let record = registry.get(&number).ok_or(ProxyError::NotFound(number.clone()))?;
+        if record.status != RegistrationStatus::Verified {
+            return Err(ProxyError::NotFound(number));
+        }
+    }
+
+    // Format alert message
+    let message = format_alert(
+        &request.title,
+        request.body.as_deref(),
+        request.severity.as_deref(),
+        request.source.as_deref(),
+        request.url.as_deref(),
+    );
+
+    // Send via Signal
+    state
+        .signal_client
+        .send_message(&number, &number, &message)
+        .await?;
+
+    info!(phone_number = %number, title = %request.title, "Alert forwarded via Signal");
+
+    Ok(Json(WebhookAlertResponse {
+        status: "sent".to_string(),
+        message: "Alert delivered via Signal".to_string(),
+    }))
+}
+
+/// Webhook alert to a specific recipient (phone or group) from a registered bot.
+/// Auth: Bearer token (JWT) matching the sender number.
+pub async fn webhook_alert_to(
+    State(state): State<AppState>,
+    Path((number, recipient)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<WebhookAlertRequest>,
+) -> Result<Json<WebhookAlertResponse>, ProxyError> {
+    let number = normalize_phone_number(&number).map_err(ProxyError::InvalidPhoneNumber)?;
+
+    // Verify JWT
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ProxyError::Unauthorized("Missing Authorization header".to_string()))?;
+
+    let claims = auth::extract_bearer_token(auth_header, &state.token_manager)?;
+    if claims.sub != number {
+        return Err(ProxyError::Unauthorized(
+            "Token does not match sender number".to_string(),
+        ));
+    }
+
+    // Verify sender is registered
+    {
+        let registry = state.registry.read().await;
+        let record = registry
+            .get(&number)
+            .ok_or(ProxyError::NotFound(number.clone()))?;
+        if record.status != RegistrationStatus::Verified {
+            return Err(ProxyError::NotFound(number.clone()));
+        }
+    }
+
+    // Normalize recipient if it looks like a phone number
+    let target = if recipient.starts_with('+') || recipient.starts_with("%2B") {
+        let decoded = urlencoding::decode(&recipient)
+            .map(|d| d.to_string())
+            .unwrap_or_else(|_| recipient.clone());
+        normalize_phone_number(&decoded).unwrap_or(decoded)
+    } else {
+        recipient.clone() // Assume it's a group ID
+    };
+
+    let message = format_alert(
+        &request.title,
+        request.body.as_deref(),
+        request.severity.as_deref(),
+        request.source.as_deref(),
+        request.url.as_deref(),
+    );
+
+    state
+        .signal_client
+        .send_message(&number, &target, &message)
+        .await?;
+
+    info!(from = %number, to = %target, title = %request.title, "Alert forwarded via Signal");
+
+    Ok(Json(WebhookAlertResponse {
+        status: "sent".to_string(),
+        message: format!("Alert delivered to {}", target),
+    }))
+}
+
+/// Grafana-compatible webhook endpoint.
+/// Auth: Bearer token (JWT) matching the target number.
+pub async fn webhook_grafana(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<GrafanaWebhookPayload>,
+) -> Result<Json<WebhookAlertResponse>, ProxyError> {
+    let title = payload
+        .rule_name
+        .or(payload.title)
+        .unwrap_or_else(|| "Grafana Alert".to_string());
+    let body = payload.message;
+    let severity = payload.state.as_deref().map(|s| match s {
+        "alerting" => "critical",
+        "ok" | "resolved" => "ok",
+        "pending" => "warning",
+        _ => "info",
+    });
+
+    let alert = WebhookAlertRequest {
+        title,
+        body,
+        severity: severity.map(|s| s.to_string()),
+        source: Some("Grafana".to_string()),
+        url: payload.rule_url,
+    };
+
+    webhook_alert(State(state), Path(number), headers, Json(alert)).await
+}
+
+/// Format an alert message for Signal.
+fn format_alert(
+    title: &str,
+    body: Option<&str>,
+    severity: Option<&str>,
+    source: Option<&str>,
+    url: Option<&str>,
+) -> String {
+    let icon = match severity.unwrap_or("info") {
+        "critical" | "error" => "🔴",
+        "warning" | "warn" => "🟡",
+        "ok" | "resolved" => "🟢",
+        _ => "🔵",
+    };
+
+    let mut msg = format!("{} **{}**", icon, title);
+
+    if let Some(src) = source {
+        msg.push_str(&format!(" ({})", src));
+    }
+
+    if let Some(b) = body {
+        if !b.is_empty() {
+            msg.push_str(&format!("\n\n{}", b));
+        }
+    }
+
+    if let Some(u) = url {
+        if !u.is_empty() {
+            msg.push_str(&format!("\n\n{}", u));
+        }
+    }
+
+    msg
 }

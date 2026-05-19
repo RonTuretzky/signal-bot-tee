@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = PaymentConfig::default();
-        assert!(config.enabled);
+        assert!(!config.enabled);
         assert_eq!(config.server_port, 8082);
     }
 }

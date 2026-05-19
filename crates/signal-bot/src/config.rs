@@ -30,9 +30,39 @@ pub struct Config {
     #[serde(default)]
     pub tools: ToolsConfig,
 
-    /// Payment configuration
+    /// Payment provider selection.
     #[serde(default)]
-    pub payments: x402_payments::PaymentConfig,
+    pub payments: PaymentsConfig,
+}
+
+/// Payment provider configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaymentsConfig {
+    /// Which payment provider to use: "none", "stripe", or "x402".
+    #[serde(default = "default_payment_provider")]
+    pub provider: String,
+
+    /// Stripe configuration (used when provider = "stripe").
+    #[serde(default)]
+    pub stripe: stripe_payments::StripeConfig,
+
+    /// x402 credit configuration (used when provider = "x402").
+    #[serde(default)]
+    pub x402: x402_payments::PaymentConfig,
+}
+
+fn default_payment_provider() -> String {
+    "none".to_string()
+}
+
+impl Default for PaymentsConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_payment_provider(),
+            stripe: stripe_payments::StripeConfig::default(),
+            x402: x402_payments::PaymentConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,6 +70,10 @@ pub struct SignalConfig {
     /// Signal CLI REST API endpoint
     #[serde(default = "default_signal_service")]
     pub service_url: String,
+
+    /// Registration proxy URL (for per-bot config lookup)
+    #[serde(default = "default_proxy_url")]
+    pub proxy_url: String,
 
     /// Poll interval for messages
     #[serde(default = "default_poll_interval", with = "humantime_serde")]
@@ -150,6 +184,7 @@ impl Default for SignalConfig {
     fn default() -> Self {
         Self {
             service_url: default_signal_service(),
+            proxy_url: default_proxy_url(),
             poll_interval: default_poll_interval(),
         }
     }
@@ -224,6 +259,10 @@ impl Default for CalculatorConfig {
 // Default value functions
 fn default_signal_service() -> String {
     "http://signal-api:8080".into()
+}
+
+fn default_proxy_url() -> String {
+    "http://localhost:8081".into()
 }
 
 fn default_poll_interval() -> Duration {

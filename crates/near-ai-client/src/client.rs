@@ -91,7 +91,7 @@ impl NearAiClient {
             .ok_or(NearAiError::EmptyResponse)
     }
 
-    /// Send a chat completion request with tool support.
+    /// Send a chat completion request with tool support and optional model override.
     #[instrument(skip(self, messages, tools), fields(message_count = messages.len()))]
     pub async fn chat_with_tools(
         &self,
@@ -100,8 +100,21 @@ impl NearAiClient {
         max_tokens: Option<u32>,
         tools: Option<&[ToolDefinition]>,
     ) -> Result<ChatResponseWithTools, NearAiError> {
+        self.chat_with_tools_and_model(messages, temperature, max_tokens, tools, None).await
+    }
+
+    /// Send a chat completion request with tool support and explicit model override.
+    #[instrument(skip(self, messages, tools), fields(message_count = messages.len()))]
+    pub async fn chat_with_tools_and_model(
+        &self,
+        messages: Vec<Message>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+        tools: Option<&[ToolDefinition]>,
+        model_override: Option<&str>,
+    ) -> Result<ChatResponseWithTools, NearAiError> {
         let request = ChatRequest {
-            model: self.model.clone(),
+            model: model_override.unwrap_or(&self.model).to_string(),
             messages,
             temperature,
             max_tokens,
